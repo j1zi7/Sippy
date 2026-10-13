@@ -1,28 +1,65 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Button } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage'; // 1. Import the storage library
 
 export default function App() {
   const [waterCount, setWaterCount] = useState(0);
 
-  const handleDrinkWater = () => {
-    setWaterCount(waterCount + 1);
+  // 2. This runs ONCE when the app first opens
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  // 3. The function to read from the phone's memory
+  const loadData = async () => {
+    try {
+      const savedCount = await AsyncStorage.getItem('waterCount');
+      const savedDate = await AsyncStorage.getItem('lastDate');
+      const today = new Date().toDateString(); // Gets today's date as a text string
+
+      if (savedDate === today) {
+        // It's still the same day, restore their progress
+        if (savedCount !== null) {
+          setWaterCount(parseInt(savedCount)); // Convert text back to a number
+        }
+      } else {
+        // It's a brand new day! Reset to 0 and save today's date
+        setWaterCount(0);
+        await AsyncStorage.setItem('lastDate', today);
+        await AsyncStorage.setItem('waterCount', '0');
+      }
+    } catch (error) {
+      console.error('Failed to load data', error);
+    }
   };
 
-  // 1. NEW: This function decides what to show based on the count
+  // 4. The function to save to the phone's memory
+  const saveData = async (newCount) => {
+    try {
+      await AsyncStorage.setItem('waterCount', newCount.toString());
+    } catch (error) {
+      console.error('Failed to save data', error);
+    }
+  };
+
+  const handleDrinkWater = () => {
+    const newCount = waterCount + 1;
+    setWaterCount(newCount); // Update the screen
+    saveData(newCount);      // Save it to memory immediately!
+  };
+
   const getPlantVisual = () => {
-    if (waterCount === 0) return '🌱'; // Sprout for 0 (just starting)
-    if (waterCount < 4) return '🪴';  // Potted plant for 1-3
-    if (waterCount < 8) return '🌻';  // Flower for 4-7
-    return '🌳';                      // Tree for 8+
+    if (waterCount === 0) return '🌱'; 
+    if (waterCount < 4) return '🪴';  
+    if (waterCount < 8) return '🌻';  
+    return '🌳';                      
   };
 
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Water Tracker</Text>
       
-      {/* 2. NEW: We call our function here to display the current plant */}
       <Text style={styles.plant}>{getPlantVisual()}</Text>
-      
       <Text style={styles.counter}>{waterCount}</Text>
       <Text style={styles.subtitle}>Glasses today</Text>
 
@@ -43,7 +80,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 20,
   },
-  // 3. NEW: We make the emoji massive so it looks like a real graphic
   plant: {
     fontSize: 120,
     marginBottom: 20,
