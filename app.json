@@ -19,6 +19,15 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "a84749b1-59d3-4e35-aacb-bdfff70fe466"
+      }
+    },
+    "owner": "jinipark",
+    "plugins": [
+      "expo-font"
+    ]
   }
 }
