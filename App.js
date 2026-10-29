@@ -45,9 +45,15 @@ export default function App() {
   const [currentTheme, setCurrentTheme] = useState('basic');
   const [stickerShape, setStickerShape] = useState('circle'); 
   const [customImages, setCustomImages] = useState({ stage0: null, stage1: null, stage2: null, stage3: null });
+  const [cupSize, setCupSize] = useState(250); 
   
   const [calView, setCalView] = useState('weekly');
   const [calDate, setCalDate] = useState(new Date());
+
+  // Profile States
+  const [isProfileExpanded, setIsProfileExpanded] = useState(false);
+  const [nickname, setNickname] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState(null);
 
   const theme = THEMES[currentTheme];
   const fontHeading = fontsLoaded ? 'Playfair' : (Platform.OS === 'ios' ? 'Georgia' : 'serif');
@@ -57,6 +63,15 @@ export default function App() {
     const offset = d.getTimezoneOffset() * 60000;
     return new Date(d.getTime() - offset).toISOString().split('T')[0];
   };
+
+  const formatVolume = (cups, size) => {
+    const totalMl = cups * (size || 250);
+    if (totalMl === 0) return '0ml';
+    if (totalMl >= 1000) return parseFloat((totalMl / 1000).toFixed(2)) + 'L';
+    return totalMl + 'ml';
+  };
+
+  const generateRandomNickname = () => 'User' + Math.floor(1000 + Math.random() * 9000);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -70,12 +85,10 @@ export default function App() {
     if (!session) return;
     const interval = setInterval(async () => {
       const { data } = await supabase.from('profiles').select('connected_user_id').eq('id', session.user.id).single();
-      if (data) {
-        if (data.connected_user_id) {
-          const { data: fData } = await supabase.from('profiles').select('id, water_count, push_token, connection_code').eq('id', data.connected_user_id).single();
-          if (fData) setFriendData(fData);
-        } else setFriendData(null);
-      }
+      if (data && data.connected_user_id) {
+        const { data: fData } = await supabase.from('profiles').select('id, water_count, push_token, connection_code, cup_size, nickname').eq('id', data.connected_user_id).single();
+        if (fData) setFriendData(fData);
+      } else setFriendData(null);
     }, 3000); 
     return () => clearInterval(interval);
   }, [session]);
@@ -84,9 +97,14 @@ export default function App() {
     const savedTheme = await AsyncStorage.getItem('appTheme');
     const savedImages = await AsyncStorage.getItem('customImages');
     const savedShape = await AsyncStorage.getItem('stickerShape');
+    const savedCupSize = await AsyncStorage.getItem('cupSize');
+    const savedAvatar = await AsyncStorage.getItem('avatarUrl');
+    
     if (savedTheme) setCurrentTheme(savedTheme);
     if (savedImages) setCustomImages(JSON.parse(savedImages));
     if (savedShape) setStickerShape(savedShape);
+    if (savedCupSize) setCupSize(parseInt(savedCupSize, 10));
+    if (savedAvatar) setAvatarUrl(savedAvatar);
   };
 
   const updateSetting = async (key, value, setter) => {
@@ -94,9 +112,36 @@ export default function App() {
     await AsyncStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
   };
 
+  const handleCupSizeChange = async (size) => {
+    setCupSize(size);
+    await AsyncStorage.setItem('cupSize', size.toString());
+    await supabase.from('profiles').update({ cup_size: size }).eq('id', session.user.id);
+  };
+
   const pickImage = async (stage) => {
     let result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [1, 1], quality: 0.8 });
     if (!result.canceled) updateSetting('customImages', { ...customImages, [stage]: result.assets[0].uri }, setCustomImages);
+  };
+
+  const pickProfilePic = async () => {
+    let result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [1, 1], quality: 0.5 });
+    if (!result.canceled) {
+      setAvatarUrl(result.assets[0].uri);
+      await AsyncStorage.setItem('avatarUrl', result.assets[0].uri);
+    }
+  };
+
+  const updateNicknameInDB = async (val) => {
+    if (!session?.user?.id) return;
+    await supabase.from('profiles').update({ nickname: val }).eq('id', session.user.id);
+  };
+
+  const toggleProfile = () => {
+    if (isProfileExpanded) {
+      // Force a save right before the card closes
+      updateNicknameInDB(nickname);
+    }
+    setIsProfileExpanded(!isProfileExpanded);
   };
 
   async function registerForPushNotificationsAsync() {
@@ -125,14 +170,25 @@ export default function App() {
 
       if (error && error.code === 'PGRST116') {
         const newCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const randomName = generateRandomNickname();
         setMyCode(newCode); 
-        await supabase.from('profiles').insert([{ id: session.user.id, water_count: 0, last_date: today, timezone: userTimezone, connection_code: newCode, push_token: pushToken || null, history: {} }]);
+        setNickname(randomName);
+        await supabase.from('profiles').insert([{ id: session.user.id, water_count: 0, last_date: today, timezone: userTimezone, connection_code: newCode, push_token: pushToken || null, history: {}, cup_size: cupSize, nickname: randomName }]);
         setWaterCount(0);
         return;
       }
 
       if (data) {
         setHistoryData(data.history || {});
+        if (data.cup_size) setCupSize(data.cup_size);
+        
+        let currentNickname = data.nickname;
+        if (!currentNickname) {
+          currentNickname = generateRandomNickname();
+          await supabase.from('profiles').update({ nickname: currentNickname }).eq('id', session.user.id);
+        }
+        setNickname(currentNickname);
+        
         if (data.last_date === today) setWaterCount(data.water_count);
         else {
           setWaterCount(0);
@@ -140,7 +196,7 @@ export default function App() {
         }
         let currentCode = data.connection_code || Math.floor(100000 + Math.random() * 900000).toString();
         setMyCode(currentCode); 
-        await supabase.from('profiles').update({ connection_code: currentCode, push_token: pushToken || null }).eq('id', session.user.id);
+        await supabase.from('profiles').update({ connection_code: currentCode, push_token: pushToken || null, cup_size: data.cup_size || cupSize }).eq('id', session.user.id);
       }
     } catch (e) { console.error(e); }
   };
@@ -167,6 +223,16 @@ export default function App() {
     ]);
   };
 
+  const handleDeleteAccount = () => {
+    Alert.alert('Delete Account', 'Are you sure? This will permanently erase your data and unlink your partner. This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete Everything', style: 'destructive', onPress: async () => {
+          await supabase.rpc('delete_my_account');
+          await supabase.auth.signOut();
+      }}
+    ]);
+  };
+
   const handleDrinkWater = async () => {
     const newCount = waterCount + 1;
     const todayKey = getLocalYYYYMMDD();
@@ -178,33 +244,23 @@ export default function App() {
 
   const sendReminder = async () => {
     if (!friendData?.push_token) return Alert.alert('Oops!', 'They do not have notifications enabled.');
-    const message = { to: friendData.push_token, sound: 'default', title: '💧 Hydrate!', body: 'Your partner sent a reminder to drink water!' };
+    const message = { to: friendData.push_token, sound: 'default', title: '💧 Hydrate!', body: `${nickname || 'Your partner'} sent a reminder to drink water!` };
     try {
       await fetch('https://exp.host/--/api/v2/push/send', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(message) });
       Alert.alert('Sent!', 'Reminder sent to your partner.');
     } catch (e) { Alert.alert('Notice', 'Reminder triggered! (Browser blocked receipt).'); }
   };
 
-  // --- DYNAMIC SHAPE MATHEMATICS ---
   const getShapeStyle = (size) => {
     if (stickerShape === 'circle') return { borderRadius: size / 2, overflow: 'hidden' };
-    if (stickerShape === 'drop') return { 
-      borderTopLeftRadius: size * 0.05, 
-      borderTopRightRadius: size, 
-      borderBottomLeftRadius: size, 
-      borderBottomRightRadius: size, 
-      transform: [{ rotate: '45deg' }], 
-      overflow: 'hidden' 
-    };
+    if (stickerShape === 'drop') return { borderTopLeftRadius: size * 0.05, borderTopRightRadius: size, borderBottomLeftRadius: size, borderBottomRightRadius: size, transform: [{ rotate: '45deg' }], overflow: 'hidden' };
     return { borderRadius: size * 0.15, overflow: 'hidden' }; 
   };
 
   const getCurrentVisual = () => {
     let stage = waterCount >= 12 ? 'stage3' : waterCount >= 8 ? 'stage2' : waterCount >= 4 ? 'stage1' : 'stage0';
     let defaultEmoji = waterCount >= 12 ? '✨' : waterCount >= 8 ? '🌳' : waterCount >= 4 ? '🪴' : '🏜️';
-    
     const shapeStyle = getShapeStyle(220);
-    // Scale 1.4 fills the corners of the rotated bounding box. -45deg keeps the image perfectly upright.
     const innerStyle = stickerShape === 'drop' ? { transform: [{ rotate: '-45deg' }, { scale: 1.4 }] } : {};
 
     return (
@@ -219,6 +275,11 @@ export default function App() {
     );
   };
 
+  const renderAvatar = (size) => {
+    if (avatarUrl) return <Image source={{ uri: avatarUrl }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: 'rgba(255,255,255,0.2)' }} />;
+    return <Ionicons name="person-circle" size={size} color={theme.text} style={{ opacity: 0.8 }} />;
+  };
+
   const renderCalendar = () => {
     const changeDate = (days) => {
       const d = new Date(calDate);
@@ -228,6 +289,8 @@ export default function App() {
     };
 
     let daysToRender = [];
+    let periodTotalCups = 0;
+
     if (calView === 'weekly') {
       const start = new Date(calDate);
       start.setDate(start.getDate() - start.getDay() + 1); 
@@ -245,16 +308,21 @@ export default function App() {
       for(let i=1; i<=daysInMonth; i++) daysToRender.push(new Date(year, month, i));
     }
 
+    daysToRender.forEach(d => {
+      if (d) {
+        const key = getLocalYYYYMMDD(d);
+        const isToday = key === getLocalYYYYMMDD();
+        const count = historyData[key] || (isToday ? waterCount : 0);
+        periodTotalCups += count;
+      }
+    });
+
     return (
       <BlurView intensity={30} tint={theme.cardTint} style={[styles.calContainer, { borderColor: theme.border ? theme.text : 'rgba(255,255,255,0.4)', borderWidth: theme.border || 1 }]}>
         <View style={styles.calHeader}>
-          <TouchableOpacity onPress={() => changeDate(calView === 'weekly' ? -7 : -1)}>
-            <BlurView intensity={50} tint={theme.cardTint} style={styles.iconGlass}><Ionicons name="chevron-back" size={20} color={theme.text}/></BlurView>
-          </TouchableOpacity>
+          <TouchableOpacity onPress={() => changeDate(calView === 'weekly' ? -7 : -1)}><BlurView intensity={50} tint={theme.cardTint} style={styles.iconGlass}><Ionicons name="chevron-back" size={20} color={theme.text}/></BlurView></TouchableOpacity>
           <Text style={[styles.calTitle, { color: theme.text, fontFamily: fontHeading }]}>{calDate.toLocaleString('default', { month: 'long', year: 'numeric' })}</Text>
-          <TouchableOpacity onPress={() => changeDate(calView === 'weekly' ? 7 : 1)}>
-            <BlurView intensity={50} tint={theme.cardTint} style={styles.iconGlass}><Ionicons name="chevron-forward" size={20} color={theme.text}/></BlurView>
-          </TouchableOpacity>
+          <TouchableOpacity onPress={() => changeDate(calView === 'weekly' ? 7 : 1)}><BlurView intensity={50} tint={theme.cardTint} style={styles.iconGlass}><Ionicons name="chevron-forward" size={20} color={theme.text}/></BlurView></TouchableOpacity>
         </View>
         
         <View style={styles.calGrid}>
@@ -273,11 +341,22 @@ export default function App() {
                 ) : (
                    <Text style={{ fontSize: 12, fontWeight: 'bold', color: theme.text, fontFamily: fontBody }}>{d.getDate()}</Text>
                 )}
-                {count > 0 && <Text style={{ fontSize: 10, color: theme.accent, fontWeight: '900', marginTop: 2, fontFamily: fontBody }}>{count} 💧</Text>}
+                {count > 0 && (
+                  <View style={{alignItems: 'center', marginTop: 2}}>
+                    <Text style={{ fontSize: 10, color: theme.accent, fontWeight: '900', fontFamily: fontBody }}>{count}💧</Text>
+                    <Text style={{ fontSize: 8, color: theme.text, opacity: 0.7, fontFamily: fontBody }}>{formatVolume(count, cupSize)}</Text>
+                  </View>
+                )}
               </View>
             );
           })}
         </View>
+
+        <View style={{ alignItems: 'center', marginTop: 25, borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.3)', paddingTop: 15 }}>
+          <Text style={{ color: theme.text, fontSize: 14, fontFamily: fontHeading, opacity: 0.8 }}>{calView === 'weekly' ? 'Weekly' : 'Monthly'} Total</Text>
+          <Text style={{ color: theme.accent, fontSize: 20, fontFamily: fontBody, fontWeight: 'bold' }}>{periodTotalCups} cups <Text style={{fontSize: 14, opacity: 0.7}}>({formatVolume(periodTotalCups, cupSize)})</Text></Text>
+        </View>
+
         <TouchableOpacity style={{ alignSelf: 'center', marginTop: 15 }} onPress={() => setCalView(calView === 'weekly' ? 'monthly' : 'weekly')}>
           <BlurView intensity={40} tint={theme.cardTint} style={{ paddingHorizontal: 20, paddingVertical: 8, borderRadius: 15, overflow: 'hidden' }}>
             <Text style={{ color: theme.text, fontSize: 12, fontFamily: fontBody }}>Switch to {calView === 'weekly' ? 'Monthly' : 'Weekly'}</Text>
@@ -305,10 +384,9 @@ export default function App() {
 
           <View style={styles.countWrapper}>
             <Text style={[styles.counter, { color: theme.text, fontFamily: fontHeading }]}>{waterCount}</Text>
-            <Text style={[styles.subtitle, { color: theme.text, opacity: 0.6, fontFamily: fontBody }]}>Daily Glasses</Text>
+            <Text style={[styles.subtitle, { color: theme.text, opacity: 0.6, fontFamily: fontBody }]}>Cups • {formatVolume(waterCount, cupSize)}</Text>
           </View>
 
-          {/* Social Glass Card */}
           {friendData && (
              <BlurView intensity={50} tint={theme.cardTint} style={[styles.glassCard, { borderColor: theme.border ? theme.text : 'rgba(255,255,255,0.4)', borderWidth: theme.border || 1 }]}>
                 <View style={styles.friendInfoRow}>
@@ -316,11 +394,12 @@ export default function App() {
                     <Ionicons name="heart" size={24} color={theme.accent} />
                   </BlurView>
                   <View>
-                    <Text style={[styles.friendLabel, { color: theme.text, opacity: 0.7, fontFamily: fontBody }]}>Partner's Water</Text>
-                    <Text style={[styles.friendCount, { color: theme.text, fontFamily: fontHeading }]}>{friendData.water_count} <Text style={{fontSize: 14, fontFamily: fontBody}}>glasses</Text></Text>
+                    <Text style={[styles.friendLabel, { color: theme.text, opacity: 0.7, fontFamily: fontBody }]}>{friendData.nickname || 'Partner'}'s Water</Text>
+                    <Text style={[styles.friendCount, { color: theme.text, fontFamily: fontHeading }]}>
+                      {friendData.water_count} <Text style={{fontSize: 14, fontFamily: fontBody}}>cups ({formatVolume(friendData.water_count, friendData.cup_size || 250)})</Text>
+                    </Text>
                   </View>
                 </View>
-                
                 <TouchableOpacity onPress={sendReminder} style={{ marginTop: 20 }}>
                    <BlurView intensity={90} tint={theme.cardTint} style={[styles.reminderBtn, { backgroundColor: theme.accent + '20', borderColor: theme.accent, borderWidth: 1 }]}>
                      <Ionicons name="notifications" size={20} color={theme.accent} />
@@ -336,13 +415,84 @@ export default function App() {
         <ScrollView style={styles.menuScroll} contentContainerStyle={styles.menuContent} showsVerticalScrollIndicator={false}>
           <Text style={[styles.headerText, { color: theme.text, fontFamily: fontHeading }]}>Dashboard</Text>
 
+          {/* POLISHED EXPANDABLE PROFILE TAB WITH SAVE FIX */}
+          <BlurView intensity={30} tint={theme.cardTint} style={[styles.profileCard, { borderColor: theme.border ? theme.text : 'rgba(255,255,255,0.4)', borderWidth: theme.border || 1 }]}>
+            <View style={{ padding: 25 }}>
+              
+              <View style={styles.profileCollapsed}>
+                
+                {/* Avatar & Edit Button Column */}
+                <View style={{ alignItems: 'center' }}>
+                  <TouchableOpacity onPress={isProfileExpanded ? pickProfilePic : toggleProfile}>
+                    {renderAvatar(isProfileExpanded ? 70 : 50)}
+                  </TouchableOpacity>
+                  {isProfileExpanded && (
+                    <TouchableOpacity onPress={pickProfilePic} style={styles.editPicBtn}>
+                      <Ionicons name="camera" size={12} color={theme.text} style={{ opacity: 0.7 }} />
+                      <Text style={{ color: theme.text, fontSize: 10, fontFamily: fontBody, marginLeft: 4, opacity: 0.8 }}>Edit Pic</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Nickname & Email Column */}
+                <TouchableOpacity activeOpacity={0.7} onPress={toggleProfile} style={{ marginLeft: 15, flex: 1, justifyContent: 'center' }}>
+                  <Text style={[styles.nicknameText, { color: theme.text, fontFamily: fontBody, fontSize: isProfileExpanded ? 22 : 18 }]}>{nickname}</Text>
+                  {isProfileExpanded && <Text style={[styles.emailText, { color: theme.text, fontFamily: fontBody }]}>{session?.user?.email}</Text>}
+                </TouchableOpacity>
+
+                {/* Chevron Toggle */}
+                <TouchableOpacity onPress={toggleProfile} style={{ paddingLeft: 10 }}>
+                  <Ionicons name={isProfileExpanded ? "chevron-up" : "chevron-down"} size={24} color={theme.text} style={{ opacity: 0.5 }} />
+                </TouchableOpacity>
+
+              </View>
+
+              {/* Expanded Text Input and Actions */}
+              {isProfileExpanded && (
+                <View style={styles.profileExpanded}>
+                  <TextInput
+                    style={[styles.nicknameInput, { color: theme.text, borderColor: theme.border ? theme.text : 'rgba(255,255,255,0.4)', borderWidth: 1, fontFamily: fontBody }]}
+                    value={nickname}
+                    onChangeText={setNickname}
+                    onBlur={() => updateNicknameInDB(nickname)}
+                    onSubmitEditing={() => updateNicknameInDB(nickname)}
+                    returnKeyType="done"
+                    placeholder="Enter Username"
+                    placeholderTextColor={theme.text}
+                    maxLength={15}
+                  />
+
+                  <View style={styles.profileActions}>
+                    <TouchableOpacity onPress={() => supabase.auth.signOut()} style={[styles.smallActionBtn, { backgroundColor: 'rgba(0,0,0,0.1)' }]}>
+                      <Text style={{ color: theme.text, fontFamily: fontBody, fontSize: 12, fontWeight: 'bold' }}>Log Out</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={handleDeleteAccount} style={[styles.smallActionBtn, { backgroundColor: 'rgba(239, 68, 68, 0.15)' }]}>
+                      <Text style={{ color: '#ef4444', fontFamily: fontBody, fontSize: 12, fontWeight: 'bold' }}>Delete Account</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+            </View>
+          </BlurView>
+
           {renderCalendar()}
 
-          {/* Sticker Customization */}
-          <Text style={[styles.sectionTitle, { color: theme.text, fontFamily: fontBody }]}>Aesthetics</Text>
+          <Text style={[styles.sectionTitle, { color: theme.text, fontFamily: fontBody }]}>Aesthetics & Settings</Text>
           <BlurView intensity={30} tint={theme.cardTint} style={[styles.settingsCard, { borderColor: theme.border ? theme.text : 'rgba(255,255,255,0.4)', borderWidth: theme.border || 1 }]}>
             
-            <Text style={[styles.subLabel, { color: theme.text, fontFamily: fontBody }]}>Sticker Shape</Text>
+            <Text style={[styles.subLabel, { color: theme.text, fontFamily: fontBody, marginBottom: 10 }]}>Cup Volume</Text>
+            <View style={styles.row}>
+              {[100, 250, 500].map(s => (
+                <TouchableOpacity key={s} onPress={() => handleCupSizeChange(s)}>
+                  <BlurView intensity={cupSize === s ? 100 : 30} tint={cupSize === s ? 'dark' : theme.cardTint} style={[styles.shapeBtn, { minWidth: 80 }]}>
+                     <Text style={{ color: cupSize === s ? '#fff' : theme.text, fontFamily: fontBody, textAlign: 'center' }}>{s}ml</Text>
+                  </BlurView>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[styles.subLabel, { color: theme.text, fontFamily: fontBody, marginTop: 30, marginBottom: 10 }]}>Sticker Shape</Text>
             <View style={styles.row}>
               {['circle', 'square', 'drop'].map(s => (
                 <TouchableOpacity key={s} onPress={() => updateSetting('stickerShape', s, setStickerShape)}>
@@ -354,10 +504,8 @@ export default function App() {
             </View>
 
             <Text style={[styles.subLabel, { color: theme.text, marginTop: 30, marginBottom: 15, fontFamily: fontBody }]}>Tap to update stages</Text>
-            
             <View style={styles.stickerRow}>
               {[{ id: 'stage0', n: 0 }, { id: 'stage1', n: 4 }, { id: 'stage2', n: 8 }, { id: 'stage3', n: 12 }].map((stg) => (
-                
                 <TouchableOpacity key={stg.id} style={styles.stickerWrapper} onPress={() => pickImage(stg.id)}>
                   <BlurView intensity={40} tint={theme.cardTint} style={[styles.stickerGlass, getShapeStyle(52)]}>
                     {customImages[stg.id] ? 
@@ -369,12 +517,10 @@ export default function App() {
                     }
                   </BlurView>
                 </TouchableOpacity>
-
               ))}
             </View>
           </BlurView>
 
-          {/* Theme Selector */}
           <Text style={[styles.sectionTitle, { color: theme.text, marginTop: 20, fontFamily: fontBody }]}>Themes</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
             {Object.keys(THEMES).map((key) => (
@@ -386,7 +532,6 @@ export default function App() {
             ))}
           </ScrollView>
 
-          {/* Connection Box */}
           <Text style={[styles.sectionTitle, { color: theme.text, fontFamily: fontBody }]}>Partner Link</Text>
           <BlurView intensity={30} tint={theme.cardTint} style={[styles.linkCard, { borderColor: theme.border ? theme.text : 'rgba(255,255,255,0.4)', borderWidth: theme.border || 1 }]}>
             <Text style={[styles.myCodeText, { color: theme.text, fontFamily: fontBody }]}>Your Code: <Text style={{fontSize: 24, letterSpacing: 4, fontFamily: fontHeading}}>{myCode}</Text></Text>
@@ -395,7 +540,8 @@ export default function App() {
               <View style={styles.linkRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={{color: theme.text, opacity: 0.6, fontSize: 12, fontFamily: fontBody}}>Linked to</Text>
-                  <Text style={{color: theme.text, fontSize: 20, letterSpacing: 2, fontFamily: fontHeading}}>{friendData.connection_code}</Text>
+                  <Text style={{color: theme.text, fontSize: 18, fontFamily: fontBody, fontWeight: 'bold', marginTop: 2}}>{friendData.nickname || 'Partner'}</Text>
+                  <Text style={{color: theme.text, fontSize: 12, opacity: 0.5, fontFamily: fontBody, marginTop: 2}}>Code: {friendData.connection_code}</Text>
                 </View>
                 <TouchableOpacity onPress={unlinkPartner} style={{ flexShrink: 0 }}>
                   <BlurView intensity={80} tint="dark" style={styles.actionBtn}>
@@ -414,30 +560,10 @@ export default function App() {
               </View>
             )}
           </BlurView>
-
-          {/* Account Actions */}
-          <View style={{ marginTop: 40, alignItems: 'center', gap: 20 }}>
-            <TouchableOpacity onPress={() => supabase.auth.signOut()}>
-              <Text style={{ color: theme.text, fontFamily: fontBody, fontSize: 16, fontWeight: 'bold' }}>Log Out</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity onPress={() => {
-              Alert.alert('Delete Account', 'Are you sure? This will permanently erase your data and unlink your partner. This cannot be undone.', [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Delete Everything', style: 'destructive', onPress: async () => {
-                    await supabase.rpc('delete_my_account');
-                    await supabase.auth.signOut();
-                }}
-              ]);
-            }}>
-              <Text style={{ color: '#ef4444', fontFamily: fontBody, fontSize: 14 }}>Delete Account</Text>
-            </TouchableOpacity>
-          </View>
           <View style={{height: 140}} /> 
         </ScrollView>
       )}
 
-      {/* FLOATING GLASS MENU BAR */}
       <View style={styles.navWrapper}>
         <BlurView intensity={60} tint={theme.cardTint} style={[styles.navBar, { borderColor: theme.border ? theme.text : 'rgba(255,255,255,0.5)', borderWidth: theme.border || 1 }]}>
           <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('home')}>
@@ -471,7 +597,7 @@ const styles = StyleSheet.create({
   friendInfoRow: { flexDirection: 'row', alignItems: 'center' },
   partnerAvatar: { width: 50, height: 50, borderRadius: 25, alignItems: 'center', justifyContent: 'center', marginRight: 15, overflow: 'hidden' },
   friendLabel: { fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 2 },
-  friendCount: { fontSize: 36 },
+  friendCount: { fontSize: 26 },
   
   reminderBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 16, borderRadius: 20, overflow: 'hidden' },
   reminderText: { marginLeft: 8, fontSize: 16 },
@@ -480,6 +606,16 @@ const styles = StyleSheet.create({
   menuContent: { paddingBottom: 40 },
   headerText: { fontSize: 36, marginBottom: 30 },
   sectionTitle: { fontSize: 14, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 15, marginLeft: 5 },
+  
+  profileCard: { borderRadius: 35, overflow: 'hidden', marginBottom: 30 },
+  profileCollapsed: { flexDirection: 'row', alignItems: 'flex-start' },
+  profileExpanded: { alignItems: 'center', paddingTop: 10 },
+  nicknameText: { fontSize: 18 },
+  editPicBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.05)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, marginTop: 8 },
+  nicknameInput: { width: '100%', padding: 12, borderRadius: 15, textAlign: 'center', fontSize: 18, marginTop: 10 },
+  emailText: { fontSize: 12, opacity: 0.6, marginTop: 4 },
+  profileActions: { flexDirection: 'row', justifyContent: 'center', width: '100%', marginTop: 20, gap: 15 },
+  smallActionBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   
   settingsCard: { padding: 25, borderRadius: 35, overflow: 'hidden', marginBottom: 30 },
   subLabel: { fontSize: 14 },
@@ -491,7 +627,7 @@ const styles = StyleSheet.create({
   
   shapeBtn: { paddingVertical: 14, paddingHorizontal: 15, minWidth: 90, borderRadius: 20, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   themePill: { paddingVertical: 16, paddingHorizontal: 20, minWidth: 100, borderRadius: 25, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
-  actionBtn: { paddingHorizontal: 25, paddingVertical: 16, minWidth: 100, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  actionBtn: { paddingHorizontal: 20, paddingVertical: 14, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   
   linkCard: { padding: 25, borderRadius: 35, overflow: 'hidden' },
   myCodeText: { fontSize: 18, marginBottom: 20, textAlign: 'center' },
@@ -504,8 +640,8 @@ const styles = StyleSheet.create({
   calTitle: { fontSize: 20 },
   calGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   calDayLabel: { width: `${100/7}%`, textAlign: 'center', fontSize: 12, marginBottom: 15 },
-  calCell: { width: `${100/7}%`, height: 45, justifyContent: 'center', alignItems: 'center', marginVertical: 2 },
-  todayHighlight: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  calCell: { width: `${100/7}%`, height: 60, justifyContent: 'flex-start', alignItems: 'center', marginVertical: 2 },
+  todayHighlight: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginBottom: 2 },
 
   navWrapper: { position: 'absolute', bottom: 35, left: 0, right: 0, alignItems: 'center' },
   navBar: { flexDirection: 'row', width: '65%', paddingVertical: 15, borderRadius: 35, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 15 }, shadowOpacity: 0.15, shadowRadius: 30 },

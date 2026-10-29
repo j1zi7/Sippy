@@ -7,7 +7,11 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.j1zi7.sippy",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -15,7 +19,8 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "package": "com.j1zi7.sippy"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -27,7 +32,8 @@
     },
     "owner": "jinipark",
     "plugins": [
-      "expo-font"
+      "expo-font",
+      "expo-status-bar"
     ]
   }
 }
